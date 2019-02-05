@@ -19,6 +19,8 @@ import sys
 
 sys.path.insert(0, os.path.abspath('../../'))
 
+from tqdm import tqdm
+
 from tgen.data import DA
 from tgen.delex import delex_sent
 from tgen.futil import tokenize
@@ -52,13 +54,25 @@ def convert(args):
     # statistics about different DAs
     da_keys = {}
     insts = 0
+    find_apostrophes = r"([a-z])\s('[a-z]{1,2}\b)"
 
     def process_instance(da, conc):
+        # why do the das need to be sorted? This seems weird
+        # Anyway, we checked it gets sorted in delex_sent anyway so nothing to
+        # do about it until later
         da.sort()
         conc_das.append(da)
 
         text, da, abst = delex_sent(da, tokenize(conc), slots_to_abstract, args.slot_names, repeated=True)
-        text = text.lower().replace('x-', 'X-')  # lowercase all but placeholders
+        # We don't want to lower case because it will make things easier for
+        # udpipe later on
+        # text = text.lower().replace('x-', 'X-')  # lowercase all but placeholders
+
+        # detokenize some of the apostrophe stuff because udpipe does it
+        # differently. Namely removing spaces between letters and apostrophes
+        text = re.sub(find_apostrophes, r"\1\2", text)
+        # we need underscores instead of dashes or else udpipe breaks it apart
+        text = re.sub(r"X-", r"X_", text)
         da.sort()
 
         da_keys[unicode(da)] = da_keys.get(unicode(da), 0) + 1
@@ -71,7 +85,7 @@ def convert(args):
     with open(args.in_file, 'r') as fh:
         csvread = csv.reader(fh, encoding='UTF-8')
         csvread.next()  # skip header
-        for mr, text in csvread:
+        for mr, text in tqdm(csvread):
             da = DA.parse_diligent_da(mr)
             process_instance(da, text)
             insts += 1
@@ -122,9 +136,11 @@ def convert(args):
         for abst in absts:
             fh.write(abst + "\n")
 
+    # We join on double new lines so that udpipe will read them out as
+    # different paragraphs
     with codecs.open(args.out_name + '-text.txt', 'w', 'UTF-8') as fh:
         for text in texts:
-            fh.write(text + "\n")
+            fh.write(text + "\n\n")
 
 
 if __name__ == '__main__':
