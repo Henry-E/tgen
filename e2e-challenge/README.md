@@ -1,3 +1,6 @@
+This is our edit of the data processing scripts to be more like what we need as input for our model
+
+
 
 TGen Baseline for the E2E NLG Challenge
 =======================================
