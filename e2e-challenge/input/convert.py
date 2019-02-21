@@ -12,13 +12,16 @@ import re
 import argparse
 import unicodecsv as csv
 import codecs
-from collections import OrderedDict
+from collections import OrderedDict, Counter
+from copy import deepcopy
 
 import os
 import sys
 
-sys.path.insert(0, os.path.abspath('../../'))
+# should be able to run from any location now
+sys.path.insert(0, os.path.abspath('/home/henrye/downloads/tgen/'))
 
+from nltk.tokenize import sent_tokenize
 from tqdm import tqdm
 
 from tgen.data import DA
@@ -50,13 +53,18 @@ def convert(args):
     concs = []  # concrete sentences
     texts = []  # abstracted sentences
     absts = []  # abstraction descriptions
+    original_sents = []
+    delexicalised_sents = []
+    sent_ids = []
+    mrs_for_delex = []
 
     # statistics about different DAs
     da_keys = {}
     insts = 0
     find_apostrophes = r"([a-z])\s('[a-z]{1,2}\b)"
 
-    def process_instance(da, conc):
+    def process_instance(da, conc, mr, multi_ref_id):
+        original_da = deepcopy(da)
         # why do the das need to be sorted? This seems weird
         # Anyway, we checked it gets sorted in delex_sent anyway so nothing to
         # do about it until later
@@ -64,15 +72,24 @@ def convert(args):
         conc_das.append(da)
 
         text, da, abst = delex_sent(da, tokenize(conc), slots_to_abstract, args.slot_names, repeated=True)
-        # We don't want to lower case because it will make things easier for
-        # udpipe later on
-        # text = text.lower().replace('x-', 'X-')  # lowercase all but placeholders
+        # Originall we didn't want to lower case because it will make things
+        # easier for udpipe later on, however ...
+        # we changed our mind on this because the upper case characters are
+        # messing with udpipe's ability to properly sentence tokenize.
+        # we need underscores instead of dashes or else udpipe breaks it apart
+        # text = re.sub(r"X-", r"X_", text)
+        # Again running into problems with leaving x and as a capital letter
+        # and also with udpipe randomly segmenting it but sometimes not. We
+        # really need to find a more reliable sentence tokenizer / word
+        # tokenizer
+        text = text.lower().replace('x-', 'x')
+        # We're testing out making xnear upper case to see if it reduces the
+        # incorrect dropping of it by the deep parser
+        text = text.replace('xnear', 'Xnear')
 
         # detokenize some of the apostrophe stuff because udpipe does it
         # differently. Namely removing spaces between letters and apostrophes
         text = re.sub(find_apostrophes, r"\1\2", text)
-        # we need underscores instead of dashes or else udpipe breaks it apart
-        text = re.sub(r"X-", r"X_", text)
         da.sort()
 
         da_keys[unicode(da)] = da_keys.get(unicode(da), 0) + 1
@@ -81,13 +98,57 @@ def convert(args):
         absts.append(abst)
         texts.append(text)
 
+        # now for our own bastardized sentence tokenization and human eval
+        # required stuff
+        this_conc_sents = sent_tokenize(conc)
+        num_sents = len(this_conc_sents)
+        this_delex_sents = []
+        for i, this_conc_sent in enumerate(this_conc_sents):
+            text, _, _ = delex_sent(original_da, tokenize(this_conc_sent), slots_to_abstract, args.slot_names, repeated=True)
+            text = text.lower().replace('x-', 'x')
+            # We're testing out making xnear upper case to see if it reduces the
+            # incorrect dropping of it by the deep parser
+            text = text.replace('xnear', 'Xnear')
+            # detokenize some of the apostrophe stuff because udpipe does it
+            # differently. Namely removing spaces between letters and apostrophes
+            text = re.sub(find_apostrophes, r"\1\2", text)
+            this_delex_sents.append(text)
+
+            # start appending the sentence specific ones
+            sent_ids.append('_'.join([mr.replace(' ', ''), str(multi_ref_id),
+                                      str(i)]))
+            mrs_for_delex.append(mr)
+
+        # now we're onto something else
+        original_sents.append('\n'.join(this_conc_sents))
+        delexicalised_sents.append('\n'.join(this_delex_sents))
+
+        # this_delex_sents = sent_tokenize(text)
+        # num_sents = len(this_conc_sents)
+        # if num_sents != len(this_delex_sents):
+        #     # this is very bad if this happens!
+        #     # import ipdb; ipdb.set_trace()
+        #     print '\n'
+        #     print this_conc_sents
+        #     print this_delex_sents
+        #     print '\nnext example'
+
+        # original_sents.append('\n'.join(this_conc_sents))
+        # delexicalised_sents.append('\n'.join(this_delex_sents))
+        # for i in range(num_sents):
+        #     sent_ids.append('_'.join([mr.replace(' ', ''), str(multi_ref_id),
+        #                               str(i)]))
+        #     mrs_for_delex.append(mr)
+
     # process the input data and store it in memory
     with open(args.in_file, 'r') as fh:
         csvread = csv.reader(fh, encoding='UTF-8')
         csvread.next()  # skip header
+        multi_ref_count = Counter()
         for mr, text in tqdm(csvread):
+            multi_ref_count[mr] += 1
             da = DA.parse_diligent_da(mr)
-            process_instance(da, text)
+            process_instance(da, text, mr, multi_ref_count[mr])
             insts += 1
 
         print 'Processed', insts, 'instances.'
@@ -142,6 +203,23 @@ def convert(args):
         for text in texts:
             fh.write(text + "\n\n")
 
+    # here are all our new ones
+    with codecs.open(args.out_name + '-orig_sents.txt', 'w', 'UTF-8') as fh:
+        for this in original_sents:
+            fh.write(this + "\n")
+
+    # again gets a double new lines for processing with udpipe
+    with codecs.open(args.out_name + '-delex_sents.txt', 'w', 'UTF-8') as fh:
+        for this in delexicalised_sents:
+            fh.write(this + "\n\n")
+
+    with codecs.open(args.out_name + '-sent_ids.txt', 'w', 'UTF-8') as fh:
+        for this in sent_ids:
+            fh.write(this + "\n")
+
+    with codecs.open(args.out_name + '-mrs_for_delex.txt', 'w', 'UTF-8') as fh:
+        for this in mrs_for_delex:
+            fh.write(this + "\n")
 
 if __name__ == '__main__':
     argp = argparse.ArgumentParser()
